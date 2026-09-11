@@ -20,3 +20,4 @@ classes/
 *.launch
 .architectury-transformer/
 .kotlin/.DS_Store
+.DS_Store
