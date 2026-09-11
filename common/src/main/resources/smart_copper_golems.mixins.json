@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "package": "me.aram.smartcoppergolems.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "minVersion": "0.8",
+  "mixins": [
+    "BlockEntityMixin",
+    "TransportItemsBetweenContainersMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

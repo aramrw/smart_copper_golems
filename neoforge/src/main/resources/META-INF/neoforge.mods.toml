@@ -1,0 +1,27 @@
+modLoader = "javafml"
+loaderVersion = "[1,)"
+license = "MIT"
+
+[[mods]]
+modId = "smart_copper_golems"
+version = "${version}"
+displayName = "Smart Copper Golems"
+authors = "Aram"
+description = "Gives Copper Golems memory of chest contents and reduces noise from empty copper chests."
+
+[[dependencies.smart_copper_golems]]
+modId = "neoforge"
+type = "required"
+versionRange = "[${neoforge_version},)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.smart_copper_golems]]
+modId = "minecraft"
+type = "required"
+versionRange = "[${minecraft_version},)"
+ordering = "NONE"
+side = "BOTH"
+
+[[mixins]]
+config = "smart_copper_golems.mixins.json"
