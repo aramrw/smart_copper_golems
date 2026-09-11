@@ -5,6 +5,8 @@ import me.aram.smartcoppergolems.data.CopperGolemSavedData;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.world.Container;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.behavior.TransportItemsBetweenContainers;
 import net.minecraft.world.entity.ai.behavior.TransportItemsBetweenContainers.ContainerInteractionState;
@@ -21,6 +23,7 @@ import net.minecraft.world.phys.AABB;
 import org.jspecify.annotations.Nullable;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -222,4 +225,73 @@ public abstract class TransportItemsBetweenContainersMixin {
             }
         }
     }
+
+    @Inject(method = "addItemsToContainer", at = @At("HEAD"), cancellable = true)
+    private static void smartcoppergolems$smartAddItemsToContainer(
+        PathfinderMob body, Container container, CallbackInfoReturnable<ItemStack> cir
+    ) {
+        if (!(body instanceof CopperGolem)) {
+            return;
+        }
+
+        ItemStack held = body.getMainHandItem();
+        if (held.isEmpty()) {
+            cir.setReturnValue(ItemStack.EMPTY);
+            return;
+        }
+
+        int containerSize = container.getContainerSize();
+        int maxAllowed = container.getMaxStackSize(held);
+
+        // PASS 1: Stack into existing matching items first!
+        for (int slot = 0; slot < containerSize; slot++) {
+            ItemStack slotStack = container.getItem(slot);
+            if (!slotStack.isEmpty() && smartcoppergolems$canItemsStack(slotStack, held)) {
+                int maxSlotStack = Math.min(slotStack.getMaxStackSize(), maxAllowed);
+                int space = maxSlotStack - slotStack.getCount();
+                if (space > 0) {
+                    int toAdd = Math.min(space, held.getCount());
+                    slotStack.grow(toAdd);
+                    held.shrink(toAdd);
+                    container.setItem(slot, slotStack);
+                    if (held.isEmpty()) {
+                        cir.setReturnValue(ItemStack.EMPTY);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // PASS 2: Place any remaining into the first available empty slot
+        for (int slot = 0; slot < containerSize; slot++) {
+            ItemStack slotStack = container.getItem(slot);
+            if (slotStack.isEmpty() && container.canPlaceItem(slot, held)) {
+                int maxSlotStack = Math.min(held.getMaxStackSize(), maxAllowed);
+                int toAdd = Math.min(maxSlotStack, held.getCount());
+                ItemStack placeStack = held.split(toAdd);
+                container.setItem(slot, placeStack);
+                if (held.isEmpty()) {
+                    cir.setReturnValue(ItemStack.EMPTY);
+                    return;
+                }
+            }
+        }
+
+        cir.setReturnValue(held);
+    }
+
+    @Unique
+    private static boolean smartcoppergolems$canItemsStack(ItemStack a, ItemStack b) {
+        if (!a.is(b.getItem())) {
+            return false;
+        }
+        if (ItemStack.isSameItemSameComponents(a, b)) {
+            return true;
+        }
+        // Identical simple items (not damaged, not enchanted, not custom-named)
+        return !a.isDamageableItem() && !b.isDamageableItem()
+            && !a.isEnchanted() && !b.isEnchanted()
+            && !a.has(DataComponents.CUSTOM_NAME) && !b.has(DataComponents.CUSTOM_NAME);
+    }
 }
+
