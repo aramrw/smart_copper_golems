@@ -7,6 +7,7 @@ import net.minecraft.core.GlobalPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.behavior.TransportItemsBetweenContainers;
+import net.minecraft.world.entity.ai.behavior.TransportItemsBetweenContainers.ContainerInteractionState;
 import net.minecraft.world.entity.ai.behavior.TransportItemsBetweenContainers.TransportItemTarget;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.animal.golem.CopperGolem;
@@ -35,6 +36,10 @@ public abstract class TransportItemsBetweenContainersMixin {
     private int ticksSinceReachingTarget;
 
     @Shadow
+    @Nullable
+    private ContainerInteractionState interactionState;
+
+    @Shadow
     protected abstract AABB getTargetSearchArea(PathfinderMob mob);
 
     @Shadow
@@ -45,6 +50,9 @@ public abstract class TransportItemsBetweenContainersMixin {
     protected abstract TransportItemTarget isTargetValidToPick(
         PathfinderMob body, Level level, BlockEntity blockEntity, Set<GlobalPos> visitedPositions, Set<GlobalPos> unreachablePositions, AABB targetBlockSearchArea
     );
+
+    @Shadow
+    protected abstract void markVisitedBlockPosAsUnreachable(PathfinderMob body, Level level, BlockPos target);
 
     @Inject(method = "getTransportTarget", at = @At("HEAD"), cancellable = true)
     private void smartcoppergolems$getSmartTransportTarget(
@@ -105,8 +113,8 @@ public abstract class TransportItemsBetweenContainersMixin {
             TransportItemTarget bestMatchingTarget = null;
             double closestMatchingDist = Double.MAX_VALUE;
 
-            TransportItemTarget bestEmptySlotTarget = null;
-            double closestEmptySlotDist = Double.MAX_VALUE;
+            TransportItemTarget bestEmptyTarget = null;
+            double closestEmptyDist = Double.MAX_VALUE;
 
             TransportItemTarget bestUnknownTarget = null;
             double closestUnknownDist = Double.MAX_VALUE;
@@ -120,8 +128,15 @@ public abstract class TransportItemsBetweenContainersMixin {
                         BlockPos pos = chestBlockEntity.getBlockPos();
                         ChestSnapshot snapshot = savedData.getSnapshot(pos);
 
-                        // If known to be completely full and cannot accept this item, skip!
-                        if (snapshot != null && !snapshot.canAcceptItem(heldItem)) {
+                        // If known to contain items, but does NOT contain the held item:
+                        // Vanilla golems NEVER deposit into a non-empty chest that doesn't match!
+                        // Skip immediately so we never check or loop between non-matching chests!
+                        if (snapshot != null && !snapshot.isEmpty() && !snapshot.matchesItem(heldItem)) {
+                            continue;
+                        }
+
+                        // If known to match, but has no space to accept more: skip!
+                        if (snapshot != null && snapshot.matchesItem(heldItem) && !snapshot.canAcceptItem(heldItem)) {
                             continue;
                         }
 
@@ -138,19 +153,19 @@ public abstract class TransportItemsBetweenContainersMixin {
                                     closestMatchingDist = distance;
                                 }
                             }
-                        } else if (snapshot != null && snapshot.hasEmptySlot()) {
-                            // Tier 2: Known to have an empty slot
-                            if (distance < closestEmptySlotDist) {
+                        } else if (snapshot != null && snapshot.isEmpty()) {
+                            // Tier 2: Completely empty chest (can start a new item category)
+                            if (distance < closestEmptyDist) {
                                 TransportItemTarget targetValid = this.isTargetValidToPick(
                                     body, level, chestBlockEntity, visitedPositions, unreachablePositions, targetBlockSearchArea
                                 );
                                 if (targetValid != null) {
-                                    bestEmptySlotTarget = targetValid;
-                                    closestEmptySlotDist = distance;
+                                    bestEmptyTarget = targetValid;
+                                    closestEmptyDist = distance;
                                 }
                             }
                         } else if (snapshot == null) {
-                            // Tier 3: Unknown chest (natural exploration)
+                            // Tier 3: Unknown chest (natural exploration to discover unique items)
                             if (distance < closestUnknownDist) {
                                 TransportItemTarget targetValid = this.isTargetValidToPick(
                                     body, level, chestBlockEntity, visitedPositions, unreachablePositions, targetBlockSearchArea
@@ -168,8 +183,8 @@ public abstract class TransportItemsBetweenContainersMixin {
             TransportItemTarget selected = null;
             if (bestMatchingTarget != null) {
                 selected = bestMatchingTarget;
-            } else if (bestEmptySlotTarget != null) {
-                selected = bestEmptySlotTarget;
+            } else if (bestEmptyTarget != null) {
+                selected = bestEmptyTarget;
             } else if (bestUnknownTarget != null) {
                 selected = bestUnknownTarget;
             }
@@ -183,6 +198,7 @@ public abstract class TransportItemsBetweenContainersMixin {
         TransportItemTarget target, PathfinderMob body, CallbackInfo ci
     ) {
         if (body instanceof CopperGolem && body.level() instanceof ServerLevel serverLevel) {
+            // Read all unique items in the chest immediately upon opening
             CopperGolemSavedData.updateChestFromLevel(serverLevel, target.pos(), target.state(), target.blockEntity());
         }
     }
@@ -192,7 +208,18 @@ public abstract class TransportItemsBetweenContainersMixin {
         TransportItemTarget target, Level level, PathfinderMob body, CallbackInfo ci
     ) {
         if (body instanceof CopperGolem && level instanceof ServerLevel serverLevel && this.ticksSinceReachingTarget >= 60) {
+            // Re-read chest contents after transaction
             CopperGolemSavedData.updateChestFromLevel(serverLevel, target.pos(), target.state(), target.blockEntity());
+
+            // Loop breaking & failure protection:
+            if (this.interactionState == TransportItemsBetweenContainers.ContainerInteractionState.PLACE_NO_ITEM) {
+                // If deposit failed, mark this position unreachable for this golem to guarantee no loops
+                this.markVisitedBlockPosAsUnreachable(body, level, target.pos());
+            } else if (this.interactionState == TransportItemsBetweenContainers.ContainerInteractionState.PICKUP_NO_ITEM) {
+                // If pickup failed because copper chest is empty, mark it empty and unreachable
+                CopperGolemSavedData.get(serverLevel).markEmpty(target.pos());
+                this.markVisitedBlockPosAsUnreachable(body, level, target.pos());
+            }
         }
     }
 }
