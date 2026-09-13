@@ -6,6 +6,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.behavior.TransportItemsBetweenContainers;
@@ -92,6 +93,11 @@ public abstract class TransportItemsBetweenContainersMixin {
                     if (potentialTarget instanceof ChestBlockEntity chestBlockEntity) {
                         BlockPos pos = chestBlockEntity.getBlockPos();
 
+                        ChestSnapshot snapshot = savedData.getSnapshot(pos);
+                        if (snapshot == null && chestBlockEntity.getBlockState().is(BlockTags.COPPER_CHESTS)) {
+                            snapshot = CopperGolemSavedData.updateChestFromLevel(level, pos, chestBlockEntity.getBlockState(), chestBlockEntity);
+                        }
+
                         // Skip known empty copper chests to avoid useless pathing & sound spam!
                         if (savedData.isKnownEmpty(pos)) {
                             continue;
@@ -130,6 +136,9 @@ public abstract class TransportItemsBetweenContainersMixin {
                     if (potentialTarget instanceof ChestBlockEntity chestBlockEntity) {
                         BlockPos pos = chestBlockEntity.getBlockPos();
                         ChestSnapshot snapshot = savedData.getSnapshot(pos);
+                        if (snapshot == null) {
+                            snapshot = CopperGolemSavedData.updateChestFromLevel(level, pos, chestBlockEntity.getBlockState(), chestBlockEntity);
+                        }
 
                         // If known to contain items, but does NOT contain the held item:
                         // Vanilla golems NEVER deposit into a non-empty chest that doesn't match!
