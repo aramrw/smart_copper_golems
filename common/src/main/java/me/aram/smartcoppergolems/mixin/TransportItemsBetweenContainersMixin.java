@@ -19,6 +19,7 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.AABB;
 import org.jspecify.annotations.Nullable;
@@ -57,6 +58,12 @@ public abstract class TransportItemsBetweenContainersMixin {
 
     @Shadow
     protected abstract void markVisitedBlockPosAsUnreachable(PathfinderMob body, Level level, BlockPos target);
+
+    @Shadow
+    protected abstract boolean isWantedBlock(PathfinderMob mob, BlockState block);
+
+    @Shadow
+    protected abstract boolean isContainerLocked(TransportItemTarget transportItemTarget);
 
     @Inject(method = "getTransportTarget", at = @At("HEAD"), cancellable = true)
     private void smartcoppergolems$getSmartTransportTarget(
@@ -125,6 +132,9 @@ public abstract class TransportItemsBetweenContainersMixin {
             TransportItemTarget bestEmptyTarget = null;
             double closestEmptyDist = Double.MAX_VALUE;
 
+            TransportItemTarget fallbackEmptyTarget = null;
+            double closestFallbackEmptyDist = Double.MAX_VALUE;
+
             TransportItemTarget bestUnknownTarget = null;
             double closestUnknownDist = Double.MAX_VALUE;
 
@@ -166,14 +176,26 @@ public abstract class TransportItemsBetweenContainersMixin {
                                 }
                             }
                         } else if (snapshot != null && snapshot.isEmpty()) {
-                            // Tier 2: Completely empty chest (can start a new item category)
-                            if (distance < closestEmptyDist) {
-                                TransportItemTarget targetValid = this.isTargetValidToPick(
-                                    body, level, chestBlockEntity, visitedPositions, unreachablePositions, targetBlockSearchArea
-                                );
-                                if (targetValid != null) {
+                            // Tier 2: Completely empty chest (can start a new item category or receive unknown/exhaust items)
+                            TransportItemTarget targetValid = this.isTargetValidToPick(
+                                body, level, chestBlockEntity, visitedPositions, unreachablePositions, targetBlockSearchArea
+                            );
+                            if (targetValid != null) {
+                                if (distance < closestEmptyDist) {
                                     bestEmptyTarget = targetValid;
                                     closestEmptyDist = distance;
+                                }
+                            } else {
+                                // Fallback: If empty chest was marked visited or unreachable, keep track of it
+                                TransportItemTarget possible = TransportItemTarget.tryCreatePossibleTarget(chestBlockEntity, level);
+                                if (possible != null
+                                    && targetBlockSearchArea.contains(pos.getX(), pos.getY(), pos.getZ())
+                                    && this.isWantedBlock(body, possible.state())
+                                    && !this.isContainerLocked(possible)) {
+                                    if (distance < closestFallbackEmptyDist) {
+                                        fallbackEmptyTarget = possible;
+                                        closestFallbackEmptyDist = distance;
+                                    }
                                 }
                             }
                         } else if (snapshot == null) {
@@ -197,8 +219,24 @@ public abstract class TransportItemsBetweenContainersMixin {
                 selected = bestMatchingTarget;
             } else if (bestEmptyTarget != null) {
                 selected = bestEmptyTarget;
+            } else if (fallbackEmptyTarget != null) {
+                // If golem has an unmatched "idk" item and the empty chest was marked visited or unreachable,
+                // unblock it so the golem ALWAYS forwards to the nearest empty chest and never gets stuck!
+                Set<GlobalPos> newVisited = new java.util.HashSet<>(visitedPositions);
+                newVisited.remove(new GlobalPos(level.dimension(), fallbackEmptyTarget.pos()));
+                body.getBrain().setMemory(MemoryModuleType.VISITED_BLOCK_POSITIONS, newVisited);
+
+                Set<GlobalPos> newUnreachable = new java.util.HashSet<>(unreachablePositions);
+                newUnreachable.remove(new GlobalPos(level.dimension(), fallbackEmptyTarget.pos()));
+                body.getBrain().setMemory(MemoryModuleType.UNREACHABLE_TRANSPORT_BLOCK_POSITIONS, newUnreachable);
+
+                selected = fallbackEmptyTarget;
             } else if (bestUnknownTarget != null) {
                 selected = bestUnknownTarget;
+            }
+
+            if (selected != null) {
+                body.getBrain().eraseMemory(MemoryModuleType.TRANSPORT_ITEMS_COOLDOWN_TICKS);
             }
 
             cir.setReturnValue(Optional.ofNullable(selected));
@@ -225,13 +263,25 @@ public abstract class TransportItemsBetweenContainersMixin {
 
             // Loop breaking & failure protection:
             if (this.interactionState == TransportItemsBetweenContainers.ContainerInteractionState.PLACE_NO_ITEM) {
-                // If deposit failed, mark this position unreachable for this golem to guarantee no loops
-                this.markVisitedBlockPosAsUnreachable(body, level, target.pos());
+                ChestSnapshot snap = CopperGolemSavedData.get(serverLevel).getSnapshot(target.pos());
+                // Only blacklist non-matching chests, NEVER blacklist an empty chest!
+                if (snap == null || !snap.isEmpty()) {
+                    this.markVisitedBlockPosAsUnreachable(body, level, target.pos());
+                }
             } else if (this.interactionState == TransportItemsBetweenContainers.ContainerInteractionState.PICKUP_NO_ITEM) {
                 // If pickup failed because copper chest is empty, mark it empty and unreachable
                 CopperGolemSavedData.get(serverLevel).markEmpty(target.pos());
                 this.markVisitedBlockPosAsUnreachable(body, level, target.pos());
             }
+        }
+    }
+
+    @Inject(method = "enterCooldownAfterNoMatchingTargetFound", at = @At("TAIL"))
+    private void smartcoppergolems$onEnterCooldown(PathfinderMob body, CallbackInfo ci) {
+        if (body instanceof CopperGolem && !body.getMainHandItem().isEmpty()) {
+            // If holding an item, reduce cooldown from 140 ticks (7s) to 20 ticks (1s)
+            // so the golem quickly delivers the item as soon as an empty chest is available
+            body.getBrain().setMemory(MemoryModuleType.TRANSPORT_ITEMS_COOLDOWN_TICKS, 20);
         }
     }
 
